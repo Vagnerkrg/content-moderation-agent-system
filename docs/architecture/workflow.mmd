@@ -1,10 +1,10 @@
-﻿flowchart TD
+flowchart TD
     START([START]) --> ANALYZER[Analyzer Agent]
 
     ANALYZER --> ROUTER{Conditional Router}
 
     ROUTER -->|Aprovado / Neutro| END_APPROVED([END])
-    ROUTER -->|Potencialmente problemático| POLICY[Policy Researcher]
+    ROUTER -->|Potencialmente problem�tico| POLICY[Policy Researcher]
 
     POLICY --> REVIEWER[Reviewer Agent]
 
