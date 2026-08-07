@@ -1,47 +1,61 @@
 """
 Agente responsável pela análise inicial de comentários.
 
-Este agente identifica possíveis problemas
-antes da pesquisa de políticas.
+Este agente identifica possíveis problemas antes
+da pesquisa de políticas.
 """
 
+from content_moderation.agents.base import BaseAgent
 from content_moderation.state.agent_state import AgentState
 
 
-def analyze_comment(state: AgentState) -> AgentState:
+class AnalyzerAgent(BaseAgent):
     """
-    Analisa o comentário recebido.
+    Agente responsável pela análise inicial do comentário.
 
-    Primeira versão baseada em regras simples.
-    Posteriormente será substituída por um LLM.
+    A primeira versão utiliza regras simples baseadas
+    em palavras-chave. Posteriormente, a análise poderá
+    ser substituída por um LLM.
     """
 
-    comentario = state["comentario_original"].lower()
+    name = "analyzer"
 
-    palavras_problematicas = [
-        "spam",
-        "ofensa",
-        "idiota",
-        "burro",
-    ]
+    def execute(self, state: AgentState) -> AgentState:
+        """
+        Analisa o comentário recebido.
 
-    problema_detectado = any(
-        palavra in comentario
-        for palavra in palavras_problematicas
-    )
+        Args:
+            state: Estado atual do fluxo de moderação.
 
-    if problema_detectado:
-        analise = (
-            "Comentário potencialmente problemático "
-            "detectado."
+        Returns:
+            Estado atualizado com a análise do agente.
+        """
+        comentario = state["comentario_original"].lower()
+
+        palavras_problematicas = [
+            "spam",
+            "ofensa",
+            "idiota",
+            "burro",
+        ]
+
+        problema_detectado = any(
+            palavra in comentario
+            for palavra in palavras_problematicas
         )
-    else:
-        analise = (
-            "Comentário classificado como positivo "
-            "ou neutro."
-        )
 
-    return {
-        **state,
-        "analise_do_agente": analise,
-    }
+        if problema_detectado:
+            analise = (
+                "Comentário potencialmente problemático "
+                "detectado."
+            )
+        else:
+            analise = (
+                "Comentário classificado como positivo "
+                "ou neutro."
+            )
+
+        return {
+            **state,
+            "analise_do_agente": analise,
+        }
