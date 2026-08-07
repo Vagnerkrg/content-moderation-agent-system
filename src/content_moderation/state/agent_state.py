@@ -21,3 +21,5 @@ class AgentState(TypedDict):
     analise_do_agente: str
     status_da_moderacao: str
     justificativa_final: str
+    decisao_humana: str
+    observacao_humana: str

@@ -5,6 +5,9 @@ Este módulo contém o StateGraph utilizado para
 orquestrar os agentes de moderação.
 """
 
+from typing import Any
+
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 
 from content_moderation.agents.analyzer import AnalyzerAgent
@@ -14,7 +17,10 @@ from content_moderation.graph.routing import route_after_analysis
 from content_moderation.state.agent_state import AgentState
 
 
-def build_workflow():
+def build_workflow(
+    checkpointer: BaseCheckpointSaver | None = None,
+    interrupt_before: list[str] | None = None,
+) -> Any:
     """
     Cria e compila o StateGraph principal.
 
@@ -25,6 +31,13 @@ def build_workflow():
 
     - Comentário positivo/neutro:
       Analyzer → END
+
+    Args:
+        checkpointer: Checkpointer opcional utilizado para
+            persistir o estado das execuções.
+
+        interrupt_before: Lista opcional de nós nos quais
+            a execução deve ser interrompida antes da execução.
 
     Returns:
         Um grafo LangGraph compilado.
@@ -69,4 +82,7 @@ def build_workflow():
         END,
     )
 
-    return workflow.compile()
+    return workflow.compile(
+        checkpointer=checkpointer,
+        interrupt_before=interrupt_before,
+    )
