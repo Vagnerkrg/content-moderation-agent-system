@@ -1,0 +1,1 @@
+"""Componentes de interação para revisão humana."""
