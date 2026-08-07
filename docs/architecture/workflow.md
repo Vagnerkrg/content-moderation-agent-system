@@ -1,250 +1,337 @@
-# Workflow do Sistema LangGraph
+# Workflow Architecture
 
-## Visão Geral
+## Informações do Documento
 
-O fluxo do sistema será orquestrado utilizando o LangGraph através de um `StateGraph`.
-
-Cada etapa do processo será representada por um nó responsável por uma função específica.
-
-O estado compartilhado (`AgentState`) será utilizado para transportar informações entre os agentes.
-
----
-
-# Fluxo Principal
-
-O fluxo inicial do sistema:
-
-Comentário do aluno
-|
-v
-+----------------+
-| Analisador |
-+----------------+
-|
-v
-Existe problema?
-|
-+----------------+
-| |
-Não Sim
-| |
-v v
-Aprovado +-----------------------+
-| Pesquisador Políticas |
-+-----------------------+
-|
-v
-+---------------+
-| Revisor |
-+---------------+
-|
-v
-Human in the Loop
-|
-v
-Ação Final
-
+**Projeto:** Content Moderation Agent System  
+**Módulo:** Architecture  
+**Documento:** Workflow Architecture  
+**Autor:** Vagner Ferreira  
+**Versão:** 1.0
 
 ---
 
-# Nós do Grafo
+# Objetivo
 
-## Nó: Analisador
+Este documento descreve o fluxo de execução do sistema de moderação de conteúdo baseado em **LangGraph**.
 
-Responsabilidade:
+O workflow utiliza um estado compartilhado (`AgentState`) para transportar as informações entre os agentes e permite decisões condicionais durante a execução.
 
-- receber o comentário original;
-- analisar o conteúdo;
-- classificar o comentário.
+---
 
-Entrada:
+# Arquitetura do Workflow
 
+O fluxo é composto pelos seguintes componentes:
+
+- Analyzer Agent
+- Conditional Router
+- Policy Researcher
+- Reviewer
+- End
+
+O Analyzer realiza a primeira análise do comentário.
+
+A partir dessa análise, o workflow decide se o comentário deve:
+
+1. Finalizar imediatamente, quando considerado positivo ou neutro.
+2. Prosseguir para pesquisa de políticas, quando considerado potencialmente problemático.
+
+Comentários problemáticos percorrem então os agentes de pesquisa e revisão antes de receber uma recomendação final.
+
+---
+
+# Fluxo de Execução
+
+```mermaid
+flowchart TD
+    START([START]) --> ANALYZER[Analyzer Agent]
+
+    ANALYZER --> ROUTER{Conditional Router}
+
+    ROUTER -->|Aprovado / Neutro| END_APPROVED([END])
+    ROUTER -->|Potencialmente problemático| POLICY[Policy Researcher]
+
+    POLICY --> REVIEWER[Reviewer Agent]
+
+    REVIEWER --> END_REVIEW([END])
+
+    Fluxo Detalhado
+1. Start
+
+O workflow recebe um AgentState contendo o comentário original e os campos necessários para transportar as informações durante a execução.
+
+2. Analyzer Agent
+
+O AnalyzerAgent realiza a análise inicial do comentário.
+
+Responsabilidades:
+
+Receber o comentário original.
+Identificar possíveis termos problemáticos.
+Produzir uma análise inicial.
+Atualizar analise_do_agente.
+
+Exemplo:
+
+Comentário:
+"Este curso é excelente."
+
+Resultado:
+
+"Comentário classificado como positivo ou neutro."
+3. Conditional Router
+
+O router avalia o resultado produzido pelo Analyzer.
+
+Comentário neutro ou positivo
+
+O fluxo é finalizado diretamente.
+
+Analyzer
+   |
+   v
+Router
+   |
+   +----> END
+Comentário potencialmente problemático
+
+O fluxo continua para o pesquisador de políticas.
+
+Analyzer
+   |
+   v
+Router
+   |
+   +----> Policy Researcher
+
+Essa decisão evita executar agentes adicionais quando eles não são necessários.
+
+4. Policy Researcher
+
+O Policy Researcher consulta as políticas relevantes para o comentário identificado como potencialmente problemático.
+
+Responsabilidades:
+
+Receber o estado compartilhado.
+Consultar políticas relevantes.
+Atualizar politicas_relevantes.
+Preservar os demais dados do estado.
+
+Quando nenhuma ferramenta externa está configurada, o agente utiliza uma indicação de diretrizes internas.
+
+5. Reviewer Agent
+
+O Reviewer consolida as informações produzidas pelos agentes anteriores.
+
+Entradas principais:
+
+analise_do_agente
+politicas_relevantes
+
+O agente produz:
+
+status_da_moderacao
+justificativa_final
+
+As recomendações possíveis são:
+
+Aprovado
+Remover
+Editar
+Estado Compartilhado
+
+Todos os agentes utilizam o mesmo AgentState.
 
 comentario_original
-
-
-Saída:
-
-
-analise_do_agente
-
-
----
-
-## Nó: Pesquisador de Políticas
-
-Responsabilidade:
-
-- buscar informações nas diretrizes da comunidade;
-- identificar possíveis violações.
-
-Este nó será executado somente quando o comentário apresentar um possível problema.
-
-Entrada:
-
-
-analise_do_agente
-
-
-Saída:
-
-
 politicas_relevantes
-
-
----
-
-## Nó: Revisor
-
-Responsabilidade:
-
-- avaliar a análise;
-- considerar as políticas encontradas;
-- gerar recomendação final.
-
-Entrada:
-
-
 analise_do_agente
-
-politicas_relevantes
-
-
-Saída:
-
-
 status_da_moderacao
-
 justificativa_final
 
+O estado permite que cada agente acrescente informações sem perder os dados produzidos anteriormente.
 
----
+Fluxo de Dados
+                    AgentState
+                        |
+                        v
+                +---------------+
+                |    Analyzer    |
+                +---------------+
+                        |
+                        v
+                +---------------+
+                | Conditional   |
+                |    Router     |
+                +---------------+
+                  /           \
+                 /             \
+                v               v
+             END          +-------------+
+                          |   Policy    |
+                          | Researcher  |
+                          +-------------+
+                                |
+                                v
+                         +-------------+
+                         |   Reviewer  |
+                         +-------------+
+                                |
+                                v
+                               END
+Princípios Arquiteturais
+Estado compartilhado
 
-# Condicional do Fluxo
+Os agentes não precisam conhecer diretamente uns aos outros.
 
-Após a execução do Analisador, o sistema deverá avaliar se existe problema.
+A comunicação acontece por meio do AgentState.
 
-A decisão será implementada utilizando:
+Separação de responsabilidades
 
-```python
-add_conditional_edges()
+Cada agente possui uma responsabilidade específica:
 
-Comportamento esperado:
+Componente	Responsabilidade
+Analyzer	Análise inicial
+Router	Decisão do próximo caminho
+Policy Researcher	Pesquisa de políticas
+Reviewer	Recomendação final
+AgentState	Transporte de informações
+Execução condicional
 
-Analisador
+O workflow evita executar agentes desnecessariamente.
 
-    |
-    |
-    +---- Sem problema
-    |
-    v
+Comentários aprovados ou neutros não precisam passar pelo pesquisador de políticas e pelo revisor.
 
-Status:
-Aprovado
+Extensibilidade
 
-ou:
+A arquitetura permite adicionar novos agentes e novas decisões sem alterar o contrato principal do estado compartilhado.
 
-Analisador
+Cenários de Execução
+Cenário 1 — Comentário aprovado
+START
+  |
+  v
+Analyzer
+  |
+  v
+Router
+  |
+  v
+END
 
-    |
-    |
-    +---- Problema identificado
-              |
-              v
+Resultado:
 
-Pesquisador de Políticas
-Human in the Loop
+status_da_moderacao = Aprovado
+Cenário 2 — Comentário potencialmente problemático
+START
+  |
+  v
+Analyzer
+  |
+  v
+Router
+  |
+  v
+Policy Researcher
+  |
+  v
+Reviewer
+  |
+  v
+END
 
-O sistema deverá possuir um ponto de interrupção antes da execução da ação final.
+O resultado depende das políticas encontradas.
 
-A pausa será configurada utilizando:
+Cenário 3 — Spam
+START
+  |
+  v
+Analyzer
+  |
+  v
+Router
+  |
+  v
+Policy Researcher
+  |
+  v
+Reviewer
+  |
+  v
+END
 
-interrupt_before
+Resultado esperado:
 
-Objetivo:
+status_da_moderacao = Remover
+Cenário 4 — Linguagem inadequada
+START
+  |
+  v
+Analyzer
+  |
+  v
+Router
+  |
+  v
+Policy Researcher
+  |
+  v
+Reviewer
+  |
+  v
+END
 
-Permitir que um moderador humano revise a decisão antes que ela seja aplicada.
+Resultado esperado:
 
-Interação Humana
+status_da_moderacao = Editar
+Validação
 
-Durante a interrupção:
+O workflow possui testes automatizados cobrindo:
 
-O sistema deverá apresentar:
+Compilação do grafo.
+Aceitação do AgentState.
+Registro dos agentes.
+Roteamento condicional.
+Fluxo de comentários aprovados.
+Fluxo de comentários problemáticos.
+Detecção de spam.
+Recomendação de edição.
+Preservação do comentário original.
+Estado final da execução.
 
-análise do agente;
-políticas encontradas;
-recomendação do revisor.
+A validação atual do projeto apresenta:
 
-O moderador poderá:
+31 passed
 
-aprovar;
-cancelar;
-modificar a justificativa.
-Atualização do Estado
+Além disso:
 
-Quando houver intervenção humana, o sistema deverá capturar o estado atual:
+ruff check .
+All checks passed!
 
-graph.get_state(config)
+E a compilação dos módulos Python é validada com:
 
-Depois atualizar utilizando:
+python -m compileall src
+Evolução Futura
 
-graph.update_state(config, new_values)
+O workflow poderá evoluir para incluir:
 
-A alteração poderá modificar:
+LLM para análise semântica.
+Pesquisa externa de políticas.
+Human-in-the-loop.
+Checkpoint e recuperação de execução.
+Métricas de execução.
+Observabilidade.
+Novos agentes especializados.
+Roteamento baseado em múltiplos critérios.
+Checklist
+ Representar fluxo em Mermaid
+ Documentar componentes
+ Documentar comunicação entre agentes
+ Documentar estado compartilhado
+ Documentar decisões condicionais
+ Documentar cenários de execução
+ Documentar validação
+ Exportar imagem do grafo
+ Atualizar README principal
 
-status_da_moderacao
-
-justificativa_final
-Checkpoints
-
-O sistema utilizará SQLite para persistência dos checkpoints.
-
-Objetivos:
-
-preservar o estado das execuções;
-permitir retomada após interrupções;
-separar diferentes execuções utilizando threads.
-Threads
-
-Cada execução deverá possuir um identificador único.
-
-Será utilizado:
-
-uuid
-
-Objetivo:
-
-Evitar conflito entre diferentes processos de moderação.
-
-Visualização do Grafo
-
-O fluxo deverá ser visualizado utilizando:
-
-draw_mermaid_png()
-
-A representação visual será utilizada para:
-
-documentação;
-validação da arquitetura;
-depuração do fluxo.
-Resultado Esperado
-
-Ao final, o sistema deverá possuir um fluxo completo:
-
-Entrada
-   |
-Análise
-   |
-Decisão
-   |
-Pesquisa de políticas
-   |
-Revisão
-   |
-Intervenção humana
-   |
-Estado atualizado
-   |
-Ação final
-
-Esse fluxo representa a arquitetura base do sistema de moderação assistido por IA.
+Autor: Vagner Ferreira
+Documento: Workflow Architecture
+Versão: 1.0
