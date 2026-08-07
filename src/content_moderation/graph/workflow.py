@@ -53,7 +53,7 @@ def build_workflow(
 
     Args:
         checkpointer: Checkpointer opcional utilizado para
-            persistir o estado das execuções.
+            persistir os estados das execuções.
 
         interrupt_before: Lista opcional de nós nos quais
             a execução deve ser interrompida antes da execução.
