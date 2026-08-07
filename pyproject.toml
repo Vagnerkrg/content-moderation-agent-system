@@ -8,9 +8,11 @@ version = "0.1.0"
 description = "Sistema de moderação de conteúdo assistido por IA utilizando LangGraph e Human in the Loop."
 readme = "README.md"
 requires-python = ">=3.12"
+
 dependencies = [
     "langchain",
     "langgraph",
+    "langgraph-checkpoint-sqlite",
     "langchain-google-genai",
     "langchain-community",
     "tavily-python",
