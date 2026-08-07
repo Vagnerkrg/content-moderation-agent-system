@@ -46,19 +46,35 @@ def research_policies(
             "politicas_relevantes": "",
         }
 
+    comentario = state["comentario_original"].lower()
+
     if search_fn is None:
-        return {
-            **state,
-            "politicas_relevantes": (
+        if "spam" in comentario:
+            politica = (
+                "Política interna: conteúdo identificado como spam "
+                "deve ser removido."
+            )
+        elif any(
+            palavra in comentario
+            for palavra in ("ofensa", "idiota", "burro")
+        ):
+            politica = (
+                "Política interna: linguagem ofensiva ou inadequada "
+                "deve ser editada antes da publicação."
+            )
+        else:
+            politica = (
                 "Pesquisa de políticas não configurada. "
                 "Utilizar diretrizes internas de moderação."
-            ),
+            )
+
+        return {
+            **state,
+            "politicas_relevantes": politica,
         }
 
-    comentario = state["comentario_original"]
-
     try:
-        resultado = search_fn(comentario)
+        resultado = search_fn(state["comentario_original"])
     except Exception as exc:
         raise PolicyResearchError(
             "Falha ao pesquisar as políticas de moderação."
