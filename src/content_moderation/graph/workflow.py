@@ -17,6 +17,24 @@ from content_moderation.graph.routing import route_after_analysis
 from content_moderation.state.agent_state import AgentState
 
 
+def execute_final_action(state: AgentState) -> AgentState:
+    """
+    Executa a ação final definida pelo fluxo de moderação.
+
+    A função representa o ponto final de execução após
+    a aprovação/intervenção humana.
+
+    Args:
+        state: Estado compartilhado do fluxo de moderação.
+
+    Returns:
+        Estado final da execução.
+    """
+    return {
+        **state,
+    }
+
+
 def build_workflow(
     checkpointer: BaseCheckpointSaver | None = None,
     interrupt_before: list[str] | None = None,
@@ -27,7 +45,8 @@ def build_workflow(
     O fluxo utiliza roteamento condicional após o Analyzer:
 
     - Comentário problemático:
-      Analyzer → Policy Researcher → Reviewer → END
+      Analyzer → Policy Researcher → Reviewer
+      → Executar Ação Final → END
 
     - Comentário positivo/neutro:
       Analyzer → END
@@ -61,6 +80,11 @@ def build_workflow(
         review_moderation,
     )
 
+    workflow.add_node(
+        "executar_acao_final",
+        execute_final_action,
+    )
+
     workflow.set_entry_point("analyzer")
 
     workflow.add_conditional_edges(
@@ -79,6 +103,11 @@ def build_workflow(
 
     workflow.add_edge(
         "reviewer",
+        "executar_acao_final",
+    )
+
+    workflow.add_edge(
+        "executar_acao_final",
         END,
     )
 

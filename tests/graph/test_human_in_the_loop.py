@@ -5,8 +5,8 @@ from content_moderation.persistence.checkpointer import get_checkpointer
 from content_moderation.state.agent_state import AgentState
 
 
-def test_workflow_pauses_before_reviewer():
-    """O workflow deve pausar antes da execução do Reviewer."""
+def test_workflow_pauses_before_final_action():
+    """O workflow deve pausar antes da execução da ação final."""
 
     state: AgentState = {
         "comentario_original": "Isso é spam.",
@@ -25,7 +25,7 @@ def test_workflow_pauses_before_reviewer():
     with get_checkpointer() as checkpointer:
         workflow = build_workflow(
             checkpointer=checkpointer,
-            interrupt_before=["reviewer"],
+            interrupt_before=["executar_acao_final"],
         )
 
         result = workflow.invoke(
@@ -37,11 +37,11 @@ def test_workflow_pauses_before_reviewer():
 
         current_state = workflow.get_state(config)
 
-        assert current_state.next == ("reviewer",)
+        assert current_state.next == ("executar_acao_final",)
 
 
 def test_workflow_can_resume_after_human_review():
-    """O workflow deve continuar após a interrupção humana."""
+    """O workflow deve continuar após a intervenção humana."""
 
     state: AgentState = {
         "comentario_original": "Isso é spam.",
@@ -60,7 +60,7 @@ def test_workflow_can_resume_after_human_review():
     with get_checkpointer() as checkpointer:
         workflow = build_workflow(
             checkpointer=checkpointer,
-            interrupt_before=["reviewer"],
+            interrupt_before=["executar_acao_final"],
         )
 
         workflow.invoke(
@@ -68,10 +68,18 @@ def test_workflow_can_resume_after_human_review():
             config=config,
         )
 
+        current_state = workflow.get_state(config)
+
+        assert current_state.next == ("executar_acao_final",)
+
         workflow.update_state(
             config,
             {
-                "status_da_moderacao": "Aguardando revisão humana",
+                "status_da_moderacao": "Remover",
+                "justificativa_final": (
+                    "Removido por conter conteúdo identificado "
+                    "como spam durante a revisão humana."
+                ),
             },
         )
 
