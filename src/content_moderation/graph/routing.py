@@ -12,21 +12,25 @@ def route_after_analysis(state: AgentState) -> str:
     """
     Decide o próximo passo após a análise do comentário.
 
-    Comentários potencialmente problemáticos seguem para o
-    pesquisador de políticas. Comentários positivos ou neutros
-    encerram o fluxo.
+    Comentários potencialmente problemáticos ou ambíguos seguem
+    para o pesquisador de políticas. Comentários positivos ou
+    neutros encerram o fluxo.
 
     Args:
         state: Estado compartilhado do workflow.
 
     Returns:
         Nome do próximo nó lógico:
-        - ``policy_researcher`` para comentários problemáticos.
+        - ``policy_researcher`` para comentários que precisam
+          de avaliação adicional.
         - ``end`` para comentários aprovados.
     """
     analysis = state["analise_do_agente"].lower()
 
-    if "potencialmente problemático" in analysis:
+    if (
+        "potencialmente problemático" in analysis
+        or "potencialmente ambíguo" in analysis
+    ):
         return "policy_researcher"
 
     return "end"

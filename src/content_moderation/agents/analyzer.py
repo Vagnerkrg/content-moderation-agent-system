@@ -1,7 +1,7 @@
 """
 Agente responsável pela análise inicial de comentários.
 
-Este agente identifica possíveis problemas antes
+Este agente identifica possíveis problemas e ambiguidades antes
 da pesquisa de políticas.
 """
 
@@ -13,8 +13,8 @@ class AnalyzerAgent(BaseAgent):
     """
     Agente responsável pela análise inicial do comentário.
 
-    A primeira versão utiliza regras simples baseadas
-    em palavras-chave. Posteriormente, a análise poderá
+    A primeira versão utiliza regras simples baseadas em
+    palavras-chave. Posteriormente, a análise poderá
     ser substituída por um LLM.
     """
 
@@ -39,14 +39,36 @@ class AnalyzerAgent(BaseAgent):
             "burro",
         ]
 
+        indicadores_ambiguidade = [
+            "talvez",
+            "não tenho certeza",
+            "nao tenho certeza",
+            "pode ser",
+            "não sei se",
+            "nao sei se",
+            "parece",
+            "aparentemente",
+            "possivelmente",
+        ]
+
         problema_detectado = any(
             palavra in comentario
             for palavra in palavras_problematicas
         )
 
+        ambiguidade_detectada = any(
+            indicador in comentario
+            for indicador in indicadores_ambiguidade
+        )
+
         if problema_detectado:
             analise = (
                 "Comentário potencialmente problemático "
+                "detectado."
+            )
+        elif ambiguidade_detectada:
+            analise = (
+                "Comentário potencialmente ambíguo "
                 "detectado."
             )
         else:

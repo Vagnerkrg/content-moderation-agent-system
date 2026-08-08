@@ -2,7 +2,7 @@
 Agente responsável pela pesquisa de políticas de moderação.
 
 Este agente consulta as diretrizes relevantes quando o analisador
-identifica um comentário potencialmente problemático.
+identifica um comentário potencialmente problemático ou ambíguo.
 
 A integração com a ferramenta de pesquisa é mantida desacoplada
 para permitir testes determinísticos e facilitar a evolução da
@@ -38,9 +38,14 @@ def research_policies(
         PolicyResearchError: Quando a pesquisa é solicitada, mas a
             ferramenta de pesquisa falha.
     """
-    analysis = state["analise_do_agente"]
+    analysis = state["analise_do_agente"].lower()
 
-    if "potencialmente problemático" not in analysis.lower():
+    analysis_requires_research = (
+        "potencialmente problemático" in analysis
+        or "potencialmente ambíguo" in analysis
+    )
+
+    if not analysis_requires_research:
         return {
             **state,
             "politicas_relevantes": "",
@@ -61,6 +66,24 @@ def research_policies(
             politica = (
                 "Política interna: linguagem ofensiva ou inadequada "
                 "deve ser editada antes da publicação."
+            )
+        elif any(
+            indicador in comentario
+            for indicador in (
+                "talvez",
+                "não tenho certeza",
+                "nao tenho certeza",
+                "pode ser",
+                "não sei se",
+                "nao sei se",
+                "parece",
+                "aparentemente",
+                "possivelmente",
+            )
+        ):
+            politica = (
+                "Política interna: conteúdo ambíguo deve ser "
+                "encaminhado para revisão humana antes da decisão final."
             )
         else:
             politica = (
