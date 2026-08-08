@@ -7,7 +7,7 @@
 **Documento:** Presentation Content
 **Autor:** Vagner Ferreira
 **Versão:** 1.0
-**Status:** Draft — fonte oficial para geração da apresentação técnica
+**Status:** Ready for presentation generation
 
 ---
 
