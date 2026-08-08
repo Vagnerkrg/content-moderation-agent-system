@@ -1,973 +1,316 @@
 # Content Moderation Agent System
 
-Sistema multiagente de moderação de conteúdo desenvolvido com **Python e LangGraph**, utilizando agentes especializados para analisar comentários, pesquisar políticas de moderação e produzir recomendações de decisão.
+![Python](https://img.shields.io/badge/python-3.12-blue)
+![Tests](https://img.shields.io/badge/tests-61%20passed-brightgreen)
+![Ruff](https://img.shields.io/badge/code%20quality-Ruff-D7FF64)
+![CI](https://github.com/Vagnerkrg/content-moderation-agent-system/actions/workflows/ci.yml/badge.svg)
 
-O projeto demonstra uma arquitetura de **Agentic AI com workflow controlado, estado compartilhado, persistência, roteamento condicional e Human-in-the-Loop**.
+Um workflow multiagente de moderação de conteúdo construído com **LangGraph**, combinando análise automatizada com um ponto de checagem de **Human-in-the-Loop** antes de qualquer decisão final ser aplicada.
 
 ---
 
 ## Visão Geral
 
-Sistemas de moderação de conteúdo precisam lidar com diferentes tipos de comentários e, em determinados casos, tomar decisões que exigem contexto adicional ou revisão humana.
+Este projeto implementa um pipeline de moderação para comentários de usuários (com escopo original para uma plataforma de cursos online) utilizando agentes especializados orquestrados como um `StateGraph`. Em vez de um único componente tentar analisar o conteúdo, consultar políticas e decidir uma ação tudo de uma vez, o workflow separa essas responsabilidades em nós distintos que trocam um estado compartilhado entre si.
 
-Este projeto implementa um workflow multiagente no qual diferentes responsabilidades são separadas entre agentes especializados.
+O sistema também trata a **supervisão humana como parte da arquitetura, não como um complemento**: o grafo é compilado com um ponto de interrupção imediatamente antes da ação final, o estado da execução é persistido em SQLite, e a decisão de um moderador pode ser registrada e usada para retomar a execução.
 
-O fluxo principal é:
+## Problema
+
+A moderação automática de conteúdo raramente é um problema simples de classificação binária. Uma abordagem de agente único e passagem única enfrenta dificuldades com:
+
+- **Conteúdo ambíguo** — comentários que não se encaixam claramente em "permitido" ou "não permitido".
+- **Contexto de políticas** — uma decisão pode depender de diretrizes da comunidade, e não apenas de correspondência de palavras-chave.
+- **Risco de ações automáticas incorretas** — remover ou editar conteúdo automaticamente, sem revisão, tem consequências reais.
+- **Rastreabilidade** — entender *por que* uma decisão foi tomada, e o que um moderador humano decidiu no fim, importa tanto quanto a decisão em si.
+
+Este projeto explora uma arquitetura que mantém análise, consulta de políticas, recomendação e ação final como **etapas separadas e inspecionáveis**, com um checkpoint humano antes de qualquer coisa irreversível acontecer.
+
+## Solução
+
+O workflow separa responsabilidades entre agentes especializados conectados por roteamento condicional:
 
 ```text
 Comentário
-    │
-    ▼
-┌─────────────────────┐
-│   Analyzer Agent    │
-└──────────┬──────────┘
+   │
+   ▼
+Analyzer Agent
+   │
+   ├── Positivo / Neutro ───────────────► END (Aprovado)
+   │
+   └── Problemático / Ambíguo
            │
            ▼
-     Classificação
+     Policy Researcher
            │
-     ┌─────┴─────────┐
-     │               │
-     ▼               ▼
-  Neutro/Positivo  Problemático
-     │               │
-     ▼               ▼
-    END      ┌─────────────────────┐
-             │  Policy Researcher  │
-             └──────────┬──────────┘
-                        │
-                        ▼
-             ┌─────────────────────┐
-             │      Reviewer       │
-             └──────────┬──────────┘
-                        │
-                        ▼
-             ┌─────────────────────┐
-             │    HUMAN REVIEW     │
-             │                     │
-             │ Workflow pausado    │
-             │ para intervenção    │
-             └──────────┬──────────┘
-                        │
-                 Decisão humana
-                        │
-                 ┌──────┴──────┐
-                 │             │
-              Aprovado      Rejeitado
-                 │             │
-                 └──────┬──────┘
-                        │
-                        ▼
-              ┌─────────────────┐
-              │  Final Action   │
-              └─────────────────┘
+           ▼
+        Reviewer
+           │
+           ▼
+   Human Review (workflow interrompido)
+           │
+           ▼
+     Ação Final ──► END
 ```
 
----
+- **Analyzer Agent** — classifica o comentário recebido como positivo/neutro, potencialmente problemático ou potencialmente ambíguo.
+- **Policy Researcher Agent** — consulta a política de moderação relevante para comentários problemáticos/ambíguos, por meio de uma função de busca conectável (desacoplada de qualquer provedor específico, para facilitar os testes).
+- **Reviewer Agent** — consolida a análise e o contexto de políticas em uma recomendação (`Aprovado`, `Remover` ou `Editar`) com justificativa.
+- **Human Review** — o grafo pausa exatamente antes do nó de ação final, para que um moderador possa inspecionar o estado completo e registrar uma decisão.
+- **Ação Final** — é executada após o checkpoint humano, encerrando a execução.
 
-# Problema
+Comentários classificados como positivos ou neutros pulam completamente a pesquisa de políticas e a revisão, saindo do grafo imediatamente e evitando chamadas desnecessárias a agentes.
 
-A moderação automática de conteúdo pode apresentar dificuldades quando um comentário contém:
+## Arquitetura
 
-* spam;
-* linguagem inadequada;
-* conteúdo potencialmente problemático;
-* situações que exigem consulta às políticas de moderação;
-* casos ambíguos;
-* situações em que uma decisão automatizada precisa ser revisada por uma pessoa.
+```mermaid
+flowchart TD
+    A[Comentário] --> B[Analyzer Agent]
+    B -->|Positivo / Neutro| Z[END]
+    B -->|Problemático / Ambíguo| C[Policy Researcher]
+    C --> D[Reviewer Agent]
+    D --> E[Human Review]
+    E -->|Interrompido antes da ação final| F[Decisão do Moderador]
+    F --> G[Executar Ação Final]
+    G --> Z
+```
 
-Uma abordagem baseada em um único agente concentra responsabilidades diferentes em um mesmo componente.
+O grafo é construído com `StateGraph(AgentState)`, usando `set_entry_point("analyzer")`, uma aresta condicional (`add_conditional_edges`) após o Analyzer, e um caminho linear de Policy Researcher → Reviewer → Ação Final. O detalhamento técnico completo — incluindo o formato do estado durante a pausa e o mecanismo de retomada — está em [`docs/architecture/human-in-the-loop.md`](docs/architecture/human-in-the-loop.md).
 
-Este projeto explora uma alternativa baseada em **agentes especializados e orquestração explícita**, permitindo separar:
+## Multi-Agent Workflow
 
-1. análise inicial;
-2. pesquisa de políticas;
-3. revisão da recomendação;
-4. intervenção humana;
-5. persistência do estado;
-6. execução da ação final.
+Dividir o pipeline em agentes especializados em vez de uma função monolítica foi uma escolha deliberada:
 
----
+- **Responsabilidade única** — cada agente (`Analyzer`, `Policy Researcher`, `Reviewer`) tem uma função claramente definida, construída sobre um contrato compartilhado `BaseAgent`.
+- **Testabilidade independente** — cada agente possui seus próprios testes unitários, e a lógica de roteamento do grafo é testada separadamente dos agentes em si.
+- **Fluxo de controle explícito** — as decisões de roteamento (`route_after_analysis`) são uma função simples, não algo escondido dentro de um agente, o que facilita entender e testar a lógica de ramificação.
+- **Extensibilidade** — o `PolicyResearcher` já aceita uma `search_fn` injetável, então substituir a busca atual baseada em regras por uma integração de busca real (ou baseada em LLM) não exige alterar o grafo.
+- **Rastreabilidade** — cada etapa escreve no mesmo `AgentState`, então o histórico completo de uma decisão (o que foi analisado, qual política se aplicou, o que foi recomendado, o que o humano decidiu) fica disponível em um único lugar.
 
-# Objetivo
+## Human-in-the-Loop
 
-O objetivo é construir uma arquitetura de referência para um sistema de moderação baseado em agentes capaz de:
+A supervisão humana é parte central do fluxo de controle, não uma interface colocada por cima dele.
 
-* analisar comentários;
-* identificar conteúdo potencialmente problemático;
-* consultar políticas relevantes;
-* produzir recomendações de moderação;
-* encaminhar casos complexos para revisão;
-* interromper o workflow antes da ação final;
-* permitir intervenção humana;
-* registrar a decisão humana;
-* persistir o estado da execução;
-* retomar workflows pausados;
-* preservar o contexto original da execução;
-* manter responsabilidades bem definidas entre os agentes.
-
-O projeto também funciona como laboratório de práticas de **AI Engineering**, incluindo:
-
-* arquitetura modular;
-* workflows controlados;
-* testes automatizados;
-* persistência;
-* roteamento condicional;
-* tratamento de erros;
-* Human-in-the-Loop;
-* rastreabilidade de decisões.
-
----
-
-# Arquitetura
-
-O sistema utiliza **LangGraph** como camada de orquestração do workflow multiagente.
-
-O estado compartilhado é representado por `AgentState`.
-
-Exemplo conceitual:
+O grafo é compilado com:
 
 ```python
-class AgentState(TypedDict):
-    comentario_original: str
-    politicas_relevantes: str
-    analise_do_agente: str
-    status_da_moderacao: str
-    justificativa_final: str
-    decisao_humana: str
-    observacao_humana: str
-```
-
-Cada nó do workflow recebe o estado compartilhado e retorna apenas as alterações relacionadas à sua responsabilidade.
-
----
-
-## Componentes
-
-### Analyzer
-
-Responsável pela análise inicial do comentário.
-
-Identifica se o conteúdo é:
-
-* positivo;
-* neutro;
-* potencialmente problemático.
-
-O Analyzer também pode identificar situações que exigem investigação adicional.
-
----
-
-### Policy Researcher
-
-Executado quando o Analyzer identifica um comentário potencialmente problemático.
-
-Sua responsabilidade é buscar e fornecer políticas relevantes para apoiar a decisão de moderação.
-
-O componente separa a etapa de **pesquisa de contexto** da etapa de decisão.
-
----
-
-### Reviewer
-
-Responsável por analisar:
-
-* comentário original;
-* análise produzida pelo Analyzer;
-* políticas relevantes;
-* contexto disponível.
-
-A partir dessas informações, o Reviewer produz uma recomendação de moderação.
-
-As recomendações podem incluir:
-
-* aprovação;
-* remoção;
-* edição;
-* avaliação adicional;
-* outras ações apropriadas ao contexto.
-
----
-
-### Human-in-the-Loop
-
-O sistema permite interromper o workflow antes da execução da ação final.
-
-Durante a pausa, um moderador pode:
-
-1. consultar o estado atual;
-2. analisar a recomendação produzida;
-3. revisar o contexto;
-4. registrar uma decisão;
-5. adicionar uma observação;
-6. retomar o workflow;
-7. permitir a execução da ação final.
-
-A decisão humana é mantida separadamente da recomendação produzida pelo agente.
-
-Isso permite distinguir claramente:
-
-```text
-Recomendação automatizada
-          │
-          ▼
-     Revisão humana
-          │
-          ▼
-    Decisão humana
-          │
-          ▼
-      Ação final
-```
-
----
-
-# Human-in-the-Loop
-
-O Human-in-the-Loop é implementado através da interrupção controlada do workflow.
-
-O objetivo é permitir que uma pessoa intervenha antes de uma ação potencialmente irreversível.
-
-Conceitualmente:
-
-```text
-Analyzer
-    │
-    ▼
-Policy Researcher
-    │
-    ▼
-Reviewer
-    │
-    ▼
-┌──────────────────────────────┐
-│        HUMAN REVIEW          │
-│                              │
-│ Workflow pausado             │
-│ antes da ação final          │
-└──────────────┬───────────────┘
-               │
-        Decisão humana
-               │
-        ┌──────┴──────┐
-        │             │
-     Aprovado      Rejeitado
-        │             │
-        └──────┬──────┘
-               │
-               ▼
-        Final Action
-```
-
-A documentação detalhada da arquitetura está disponível em:
-
-```text
-docs/architecture/human-in-the-loop.md
-```
-
-O documento descreve:
-
-* fluxo de pausa;
-* intervenção humana;
-* inspeção do estado;
-* atualização do estado;
-* decisão humana;
-* observações;
-* retomada do workflow;
-* persistência;
-* tratamento de ambiguidade;
-* cenários de aprovação e rejeição;
-* decisões arquiteturais;
-* evolução futura.
-
----
-
-## Interrupção do Workflow
-
-A interrupção é configurada durante a construção do workflow.
-
-Exemplo conceitual:
-
-```python
-workflow = build_workflow(
+workflow.compile(
     checkpointer=checkpointer,
     interrupt_before=["executar_acao_final"],
 )
 ```
 
-Isso permite que os agentes responsáveis pela análise e recomendação concluam suas etapas antes da intervenção humana.
+Isso significa que todas as etapas até (e incluindo) a recomendação do Reviewer são executadas automaticamente, mas a execução **pausa antes da ação final** para que um moderador possa inspecionar o estado acumulado — o comentário original, a análise, o contexto de políticas e a recomendação — antes que qualquer coisa seja finalizada.
 
----
+A decisão do moderador é capturada por uma interface de revisão dedicada (`display_review` / `request_human_decision` / `collect_human_review`) e gravada de volta no estado compartilhado como `decisao_humana` e `observacao_humana`. Como o estado é persistido via checkpoint, o workflow pode ser retomado depois usando o mesmo `thread_id`, continuando exatamente de onde parou.
 
-## Inspeção do Estado
+Esta é uma das partes mais testadas do sistema, cobrindo aprovação, rejeição, roteamento de comentários ambíguos e preservação do comentário original durante todo o ciclo. Detalhes completos e as decisões de design: [`docs/architecture/human-in-the-loop.md`](docs/architecture/human-in-the-loop.md).
 
-Durante a pausa, o estado da execução pode ser consultado utilizando o contexto da execução:
+## State Management
 
-```python
-paused_state = workflow.get_state(config)
-```
+Todos os agentes leem e escrevem em um único `AgentState` compartilhado (`TypedDict`), que carrega:
 
-Isso permite que o moderador tenha acesso às informações produzidas pelo workflow antes de tomar uma decisão.
+| Campo | Definido por | Propósito |
+| --- | --- | --- |
+| `comentario_original` | Entrada | O comentário original, preservado sem alterações durante toda a execução |
+| `analise_do_agente` | Analyzer | Classificação produzida pela análise inicial |
+| `politicas_relevantes` | Policy Researcher | Contexto de política obtido para comentários problemáticos/ambíguos |
+| `status_da_moderacao` | Reviewer | Ação recomendada (`Aprovado`, `Remover`, `Editar`) |
+| `justificativa_final` | Reviewer | Justificativa da recomendação |
+| `decisao_humana` | Human Review | Decisão do moderador |
+| `observacao_humana` | Human Review | Observações/notas do moderador |
 
----
+Os agentes atualizam apenas os campos sob sua responsabilidade e repassam o restante do estado inalterado, o que mantém os efeitos colaterais de cada nó previsíveis e testáveis.
 
-## Registro da Decisão Humana
+## Persistence and Checkpointing
 
-A decisão humana é armazenada separadamente da recomendação automatizada.
+O workflow utiliza o checkpointer SQLite do LangGraph (`SqliteSaver`, via `langgraph-checkpoint-sqlite`) para persistir o estado em `data/checkpoints.db`. Cada execução é associada a um `thread_id` (um UUID, gerado e validado em `runtime/threads.py`), o que permite ao checkpointer:
 
-Exemplo:
+- Salvar o estado antes da interrupção.
+- Salvar o estado novamente após a decisão humana ser registrada.
+- Retomar uma execução específica depois, usando o mesmo `thread_id`, sem perder o contexto anterior.
 
-```python
-workflow.update_state(
-    config,
-    {
-        "decisao_humana": "aprovado",
-        "observacao_humana": (
-            "Recomendação aprovada pelo moderador."
-        ),
-    },
-)
-```
+O checkpointing é o que torna a pausa do Human-in-the-Loop significativa na prática — sem ele, um grafo interrompido não teria de onde retomar.
 
-Os principais campos utilizados são:
+## Why LangGraph?
 
-```text
-decisao_humana
-observacao_humana
-```
+O LangGraph foi escolhido especificamente pelas propriedades que este workflow exigia:
 
-Essa separação permite preservar:
+- **Execução com estado (stateful)** — um único objeto `AgentState` flui por todos os nós, em vez de agentes trocando mensagens ad-hoc entre si.
+- **Roteamento condicional** — `add_conditional_edges` permite que o grafo pule completamente a pesquisa de políticas e a revisão para comentários não problemáticos, com base em uma função de roteamento simples em Python.
+- **Interrupt / resume** — `interrupt_before` fornece um mecanismo nativo para pausar uma execução antes de um nó específico, exatamente o que um checkpoint de aprovação humana precisa.
+- **Persistência conectável (pluggable)** — a abstração de checkpointer tornou simples apoiar o grafo em SQLite sem acoplar a lógica do workflow a um mecanismo de armazenamento específico.
+- **Estrutura de grafo explícita** — o workflow é definido como nós e arestas em vez de fluxo de controle implícito, o que facilita testar roteamento e transições de estado independentemente da lógica interna dos agentes.
 
-* recomendação do agente;
-* decisão humana;
-* justificativa da intervenção;
-* contexto original.
+## Technology Stack
 
-Esse modelo é importante para **auditoria, rastreabilidade e avaliação futura da qualidade das decisões automatizadas**.
+| Tecnologia | Finalidade |
+| --- | --- |
+| Python 3.12 | Implementação principal |
+| LangGraph | Orquestração do workflow de agentes, state graph, checkpointing |
+| LangChain / LangChain Community | Ecossistema de agentes e superfície de integração |
+| `langgraph-checkpoint-sqlite` | Checkpointer baseado em SQLite |
+| Tavily (`tavily-python`) | Ponto de integração preparado para pesquisa externa de políticas |
+| Pydantic | Modelo de saída estruturada (`CommentAnalysis`) |
+| Pytest / pytest-asyncio | Testes automatizados |
+| Ruff | Linting e qualidade de código |
+| GitHub Actions | Integração Contínua (CI) |
 
----
-
-## Retomada
-
-Após a intervenção humana, o workflow pode ser retomado utilizando o mesmo contexto de execução:
-
-```python
-workflow.invoke(
-    None,
-    config=config,
-)
-```
-
-O `thread_id` permite recuperar a execução anterior e preservar o estado associado ao workflow.
-
----
-
-# Persistência
-
-O projeto utiliza o **SQLite Checkpointer** para persistir o estado das execuções do LangGraph.
-
-O banco é armazenado em:
-
-```text
-data/checkpoints.db
-```
-
-Conceitualmente:
-
-```text
-Workflow
-    │
-    ▼
-SQLite Checkpointer
-    │
-    ├── Estado inicial
-    │
-    ├── Estado após Analyzer
-    │
-    ├── Estado após Policy Researcher
-    │
-    ├── Estado após Reviewer
-    │
-    ├── Estado durante Human Review
-    │
-    └── Estado após retomada
-```
-
-Cada execução pode ser identificada por um `thread_id`.
-
-Exemplo:
-
-```python
-config = {
-    "configurable": {
-        "thread_id": "moderation-thread-001"
-    }
-}
-```
-
-Isso permite interromper uma execução e retomá-la posteriormente mantendo o contexto persistido.
-
----
-
-# Comentários Ambíguos
-
-Casos ambíguos são tratados como situações que podem exigir avaliação humana.
-
-Exemplo:
-
-```text
-"Talvez seja uma promoção, mas não tenho certeza."
-```
-
-Um comentário desse tipo pode exigir informações adicionais antes de uma decisão definitiva.
-
-O fluxo pode seguir:
-
-```text
-Analyzer
-    │
-    ▼
-Comentário potencialmente ambíguo
-    │
-    ▼
-Policy Researcher
-    │
-    ▼
-Reviewer
-    │
-    ▼
-Human Review
-    │
-    ▼
-Decisão humana
-```
-
-O sistema não deve assumir automaticamente que uma situação ambígua deve ser aprovada ou rejeitada.
-
-A intervenção humana permite adicionar contexto e controlar a decisão final.
-
----
-
-# Decisão Humana
-
-A decisão humana representa a autoridade final sobre o caso quando o workflow é configurado para exigir revisão.
-
-A recomendação automatizada não é sobrescrita silenciosamente.
-
-Em vez disso, o sistema mantém as duas informações:
-
-```text
-Análise automatizada
-        │
-        ▼
-Recomendação do Reviewer
-        │
-        ▼
-Intervenção humana
-        │
-        ▼
-Decisão humana
-        │
-        ▼
-Ação final
-```
-
-Essa abordagem melhora a rastreabilidade e permite avaliar posteriormente:
-
-* quando o agente acertou;
-* quando o agente errou;
-* quando o humano discordou;
-* quais tipos de casos exigem intervenção;
-* quais recomendações são mais confiáveis.
-
----
-
-# Stack Tecnológica
-
-| Tecnologia                  | Função                                 |
-| --------------------------- | -------------------------------------- |
-| Python 3.12+                | Linguagem principal                    |
-| LangGraph                   | Orquestração do workflow multiagente   |
-| LangChain                   | Componentes e integração com modelos   |
-| SQLite                      | Persistência local                     |
-| langgraph-checkpoint-sqlite | Persistência do estado do LangGraph    |
-| Pydantic                    | Validação de estruturas de dados       |
-| pytest                      | Testes automatizados                   |
-| pytest-asyncio              | Suporte a testes assíncronos           |
-| Ruff                        | Linting e qualidade de código          |
-| python-dotenv               | Gerenciamento de variáveis de ambiente |
-| Tavily                      | Pesquisa externa de políticas          |
-| Google GenAI                | Integração com modelo de linguagem     |
-
----
-
-# Estrutura do Projeto
+## Project Structure
 
 ```text
 content-moderation-agent-system/
-│
-├── data/
-│   └── checkpoints.db
-│
-├── docs/
-│   └── architecture/
-│       └── human-in-the-loop.md
-│
 ├── src/
 │   └── content_moderation/
-│       │
-│       ├── agents/
-│       │   ├── analyzer.py
-│       │   ├── base.py
-│       │   ├── models.py
-│       │   ├── policy_researcher.py
-│       │   └── reviewer.py
-│       │
-│       ├── graph/
-│       │   ├── routing.py
-│       │   └── workflow.py
-│       │
-│       ├── human_review/
-│       │   └── ...
-│       │
-│       ├── persistence/
-│       │   └── checkpointer.py
-│       │
-│       ├── runtime/
-│       │   └── ...
-│       │
-│       ├── state/
-│       │   └── agent_state.py
-│       │
-│       └── tools/
-│
+│       ├── agents/          # Analyzer, Policy Researcher, Reviewer, BaseAgent
+│       ├── graph/            # Definição do StateGraph e roteamento condicional
+│       ├── human_review/     # Interface de revisão Human-in-the-Loop
+│       ├── persistence/      # Configuração do checkpointer SQLite
+│       ├── runtime/          # Criação/validação de thread ID
+│       └── state/            # Definição do AgentState compartilhado
 ├── tests/
-│   │
 │   ├── agents/
-│   │   ├── test_analyzer.py
-│   │   ├── test_base.py
-│   │   ├── test_models.py
-│   │   ├── test_policy_researcher.py
-│   │   └── test_reviewer.py
-│   │
 │   ├── graph/
-│   │   ├── test_execution_flow.py
-│   │   ├── test_human_in_the_loop.py
-│   │   ├── test_human_review_state.py
-│   │   ├── test_routing.py
-│   │   └── test_workflow.py
-│   │
 │   ├── human_review/
-│   │   ├── test_human_approval_scenarios.py
-│   │   └── test_interface.py
-│   │
 │   ├── persistence/
-│   │   ├── test_checkpointer.py
-│   │   └── test_workflow_checkpoint.py
-│   │
-│   ├── runtime/
-│   │   └── test_threads.py
-│   │
-│   └── test_project.py
-│
-├── .env.example
+│   └── runtime/
+├── docs/
+│   ├── architecture/          # Docs de Human-in-the-Loop, workflow e design dos agentes
+│   └── development/           # Guia de setup local
+├── .github/
+│   └── workflows/ci.yml       # Pipeline de CI
 ├── pyproject.toml
-├── README.md
-└── ...
+└── README.md
 ```
 
----
+## How It Works
 
-# Requisitos
+```text
+1. Um comentário entra no grafo como o AgentState inicial.
+2. O Analyzer classifica como positivo/neutro, problemático ou ambíguo.
+3. Comentários positivos/neutros saem do grafo imediatamente como aprovados.
+4. Comentários problemáticos ou ambíguos são roteados para o Policy Researcher.
+5. O Policy Researcher anexa o contexto de política relevante ao estado.
+6. O Reviewer consolida análise + contexto de política em uma recomendação.
+7. O grafo pausa antes do nó de ação final (Human-in-the-Loop).
+8. Um moderador revisa o estado e registra uma decisão.
+9. O workflow retoma usando o mesmo thread_id e executa a ação final.
+```
 
-* Python 3.12 ou superior;
-* ambiente virtual Python;
-* credenciais das APIs utilizadas pelo projeto, quando necessário.
-
----
-
-# Instalação
-
-Clone o repositório:
+## Running the Project
 
 ```bash
 git clone https://github.com/Vagnerkrg/content-moderation-agent-system.git
-```
-
-Entre no diretório:
-
-```bash
 cd content-moderation-agent-system
-```
 
-Crie o ambiente virtual:
-
-```bash
 python -m venv venv
-```
-
-Ative o ambiente no Windows PowerShell:
-
-```powershell
+# Windows PowerShell
 .\venv\Scripts\Activate.ps1
+
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
-Instale as dependências:
-
-```powershell
-pip install -e .
-```
-
-Para instalar as dependências de desenvolvimento:
-
-```powershell
-pip install -e ".[dev]"
-```
-
----
-
-# Configuração
-
-Copie o arquivo de exemplo:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Configure no `.env` as credenciais necessárias para os serviços externos utilizados pelo projeto.
-
-Exemplo:
-
-```env
-GOOGLE_API_KEY=your_api_key
-TAVILY_API_KEY=your_api_key
-```
-
-> Nunca versione credenciais reais no repositório.
-
----
-
-# Execução
-
-O workflow pode ser construído através de:
-
-```python
-workflow = build_workflow()
-```
-
-Para utilizar persistência:
-
-```python
-with get_checkpointer() as checkpointer:
-    workflow = build_workflow(
-        checkpointer=checkpointer,
-    )
-```
-
-Para habilitar Human-in-the-Loop:
-
-```python
-with get_checkpointer() as checkpointer:
-    workflow = build_workflow(
-        checkpointer=checkpointer,
-        interrupt_before=["executar_acao_final"],
-    )
-```
-
----
-
-# Exemplos de Comentários
-
-## Comentário Neutro
+As variáveis de ambiente são configuradas em um arquivo `.env` na raiz do projeto (veja `.env.example`):
 
 ```text
-"Este curso é excelente."
+GEMINI_API_KEY="sua_chave_aqui"
+TAVILY_API_KEY="sua_chave_aqui"
 ```
 
-Fluxo esperado:
-
-```text
-Analyzer
-   │
-   ▼
-Neutro
-   │
-   ▼
- END
-```
-
-O comentário não necessita de pesquisa de políticas nem revisão adicional.
-
----
-
-## Comentário Potencialmente Problemático
-
-```text
-"Compre agora! Isso é spam."
-```
-
-Fluxo esperado:
-
-```text
-Analyzer
-   │
-   ▼
-Problemático
-   │
-   ▼
-Policy Researcher
-   │
-   ▼
-Reviewer
-   │
-   ▼
-Human Review
-   │
-   ▼
-Final Action
-```
-
-A decisão final pode resultar em uma recomendação de remoção.
-
----
-
-## Linguagem Inadequada
-
-Exemplo conceitual:
-
-```text
-Comentário contendo linguagem inadequada.
-```
-
-Fluxo:
-
-```text
-Analyzer
-   │
-   ▼
-Problemático
-   │
-   ▼
-Policy Researcher
-   │
-   ▼
-Reviewer
-   │
-   ▼
-Human Review
-   │
-   ▼
-Final Action
-```
-
-O Reviewer pode recomendar uma ação de edição, dependendo do contexto e das políticas encontradas.
-
----
-
-# Testes
-
-O projeto segue uma abordagem orientada a testes.
-
-Execute toda a suíte:
-
-```powershell
-pytest
-```
-
-Estado atual:
-
-```text
-61 passed in 0.75s
-```
-
-Os testes cobrem:
-
-* comportamento dos agentes;
-* modelos e validações;
-* roteamento;
-* execução do workflow;
-* preservação do estado;
-* Human-in-the-Loop;
-* aprovação humana;
-* rejeição humana;
-* comentários ambíguos;
-* interface de revisão;
-* persistência;
-* checkpoints;
-* `thread_id`;
-* retomada de execuções.
-
----
-
-# Qualidade de Código
-
-O projeto utiliza **Ruff** para validação estática.
-
-Execute:
-
-```powershell
-ruff check .
-```
-
-Resultado atual:
-
-```text
-All checks passed!
-```
-
----
-
-# Compilação
-
-A compilação dos módulos Python pode ser validada com:
-
-```powershell
-python -m compileall src
-```
-
-A execução deve concluir sem erros.
-
----
-
-# Validação Atual
-
-No estado atual do projeto:
-
-```text
-ruff check .
-→ All checks passed!
-
-python -m compileall src
-→ Compilação concluída sem erros
-
-pytest
-→ 61 passed
-```
-
-Essas verificações fornecem uma validação básica de:
-
-* qualidade estática;
-* integridade sintática;
-* comportamento automatizado;
-* integração entre componentes;
-* persistência;
-* Human-in-the-Loop.
-
----
-
-# Qualidade e Engenharia
-
-O projeto busca demonstrar práticas utilizadas em sistemas reais de **AI Engineering**:
-
-* separação de responsabilidades;
-* agentes especializados;
-* estado compartilhado;
-* roteamento explícito;
-* workflows determinísticos;
-* persistência;
-* checkpoints;
-* `thread_id`;
-* Human-in-the-Loop;
-* intervenção humana controlada;
-* testes automatizados;
-* validação estática;
-* configuração por ambiente;
-* tratamento controlado de erros;
-* arquitetura modular;
-* rastreabilidade de decisões.
-
-A intenção não é apenas demonstrar o uso de um framework de agentes, mas construir uma base arquitetural que possa evoluir para um sistema de moderação mais completo.
-
----
-
-# Roadmap
-
-Possíveis evoluções do projeto:
-
-* interface dedicada para revisão humana;
-* painel de moderação;
-* observabilidade das execuções;
-* tracing dos agentes;
-* métricas de qualidade;
-* avaliação automática das decisões;
-* datasets de avaliação;
-* armazenamento de histórico de decisões;
-* autenticação do painel de revisão;
-* execução assíncrona;
-* deployment;
-* integração com APIs externas de moderação;
-* avaliação de diferentes modelos de linguagem;
-* sistema de auditoria;
-* métricas de intervenção humana;
-* avaliação de concordância entre agente e moderador.
-
----
-
-# Status
-
-**Projeto em desenvolvimento.**
-
-Funcionalidades atualmente implementadas:
-
-* arquitetura multiagente;
-* Analyzer;
-* Policy Researcher;
-* Reviewer;
-* roteamento condicional;
-* estado compartilhado;
-* SQLite Checkpointer;
-* persistência do estado;
-* `thread_id`;
-* Human-in-the-Loop;
-* interrupção controlada do workflow;
-* inspeção do estado;
-* atualização do estado;
-* registro da decisão humana;
-* retomada do workflow;
-* cenários de aprovação;
-* cenários de rejeição;
-* tratamento de comentários ambíguos;
-* testes automatizados;
-* validação com Ruff;
-* validação de compilação Python.
-
-### Validação atual
+## Testing and Quality
 
 ```text
 61 testes passando
 Ruff: All checks passed
-Compileall: sem erros
+python -m compileall src: sem erros
 ```
 
----
+A cobertura de testes abrange:
 
-# Documentação
+- **Agents** — Analyzer, Policy Researcher, Reviewer e o contrato do `BaseAgent`, incluindo o modelo estruturado `CommentAnalysis`.
+- **Graph** — compilação do workflow, roteamento condicional, fluxo de execução e o comportamento de interrupção antes da ação final.
+- **Human review** — cenários de aprovação e rejeição, a própria interface de revisão, e o tratamento do estado de human review.
+- **Persistence** — configuração do checkpointer SQLite e checkpointing em nível de workflow.
+- **Runtime** — criação e validação de thread ID.
+- **Project sanity** — verificações básicas em nível de projeto (`tests/test_project.py`).
 
-A documentação arquitetural complementar está disponível em:
+Executar localmente com:
+
+```bash
+pytest
+ruff check .
+```
+
+## CI/CD
+
+Todo push e pull request para `main` dispara o pipeline do GitHub Actions definido em [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
 ```text
-docs/architecture/
+Push / Pull Request → main
+        │
+        ▼
+Setup Python 3.12
+        │
+        ▼
+pip install -e ".[dev]"
+        │
+        ▼
+ruff check .
+        │
+        ▼
+python -m compileall src
+        │
+        ▼
+pytest
 ```
 
-Principal documento relacionado ao Human-in-the-Loop:
+## Engineering Decisions
 
-```text
-docs/architecture/human-in-the-loop.md
-```
+- **Agentes especializados em vez de um classificador monolítico** — separa análise, consulta de políticas e recomendação em unidades independentemente testáveis.
+- **Roteamento condicional explícito** — a ramificação após o Analyzer é uma função simples (`route_after_analysis`), não uma lógica implícita escondida dentro de um nó.
+- **Checkpoint humano antes da ação final, não antes da análise** — o sistema é livre para analisar e recomendar automaticamente, mas a etapa com consequências reais exige validação humana.
+- **Checkpointing SQLite com isolamento por `thread_id`** — cada execução é persistida e retomável de forma independente, sem interferência entre execuções.
+- **Pesquisa de políticas desacoplada (injeção de `search_fn`)** — mantém o Policy Researcher testável sem depender de uma integração externa ativa, deixando espaço para plugar o Tavily ou uma busca baseada em LLM futuramente.
+- **Recomendação e decisão humana armazenadas separadamente** (`status_da_moderacao` vs. `decisao_humana`) — preserva a capacidade de comparar o que o agente sugeriu com o que o moderador de fato decidiu.
 
-Esse documento apresenta os detalhes de implementação e as decisões arquiteturais relacionadas à intervenção humana.
+## Challenges
 
----
+- Manter o `AgentState` compartilhado consistente à medida que mais campos (`decisao_humana`, `observacao_humana`) foram introduzidos para a fase de Human-in-the-Loop, sem quebrar os agentes anteriores.
+- Projetar o ponto de interrupção de forma que o workflow pause exatamente no lugar certo — depois de gerar uma recomendação, mas antes de qualquer efeito difícil de desfazer.
+- Tornar a etapa de pesquisa de políticas testável isoladamente, mantendo um caminho de integração limpo para uma ferramenta de busca externa real.
+- Estruturar o roteamento como uma função explícita e testável isoladamente, em vez de deixá-lo implícito dentro do código dos agentes.
+- Validar que uma execução retomada reflete corretamente a decisão humana sem perder o estado produzido anteriormente no grafo.
 
-# Autor
+## Lessons Learned
+
+- Construir um sistema multiagente deixou claro o quanto um objeto de estado compartilhado e bem tipado simplifica a comunicação entre agentes, em comparação com troca de mensagens ad-hoc.
+- O `interrupt_before` do LangGraph se mostrou um encaixe natural para Human-in-the-Loop: a pausa é parte de primeira classe da definição do grafo, não uma solução alternativa.
+- Desacoplar integrações propensas a efeitos colaterais (como a pesquisa de políticas) atrás de uma função injetável fez diferença real na testabilidade dos agentes.
+- Persistir o estado, e não apenas o resultado final, é o que de fato torna a pausa e retomada confiável em um workflow com envolvimento humano.
+- Testar a lógica de roteamento separadamente da lógica dos agentes valeu a pena — facilitou verificar ambos sem excesso de mocks.
+
+## Future Improvements
+
+As opções a seguir são possíveis evoluções futuras, não funcionalidades já implementadas:
+
+- Observabilidade e tracing para execuções individuais.
+- Um framework de avaliação para medir a concordância entre agente e humano.
+- Integração com um provedor de LLM de produção para o Analyzer e o Reviewer.
+- Métricas sobre os resultados de moderação e a frequência de intervenção humana.
+- Um dashboard ou interface web para moderadores, substituindo a revisão atual baseada em console.
+- Uma base de conhecimento de políticas estruturada, além da consulta atual baseada em regras.
+- Suporte a deployment e execução assíncrona.
+
+## Author
 
 **Vagner Ferreira**
 
 Data Scientist | AI/Data Engineer | LLM & Agentic Systems
 
-Brasil
+[github.com/Vagnerkrg](https://github.com/Vagnerkrg)
 
 ---
 
-## Licença
-
-Este projeto é destinado a fins educacionais, experimentais e de portfólio profissional.
+Este projeto tem fins educacionais, experimentais e de portfólio profissional.
